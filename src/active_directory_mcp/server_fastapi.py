@@ -34,6 +34,7 @@ from .config.models import LoggingConfig
 from .config.multi_loader import load_multi_config, MultiConfigError
 from .core.ad_pool import ADServerPool
 from .core.logging import setup_logging
+from .core.redaction import redact, register_secret
 from .core.ldap_manager import LDAPManager
 from .core.client_security import init_security_manager
 from .core.resolver import nome_novo_de, resolver_argumentos
@@ -209,6 +210,8 @@ class ActiveDirectoryMCPFastAPI:
         self.config_path = config_path
         self.host = host
         self.port = port
+        # The bearer token never appears in a log line or an error.
+        register_secret(os.getenv("AD_MCP_API_TOKEN"))
 
         # Mode gate. 'single' keeps the original one-AD-per-process path.
         self.mode = (mode or os.getenv("AD_MCP_MODE") or "single").strip().lower()
@@ -1521,12 +1524,19 @@ class ActiveDirectoryMCPFastAPI:
         return {"tools": tools_list}
 
     def _as_content(self, payload) -> dict:
-        """Wrap a payload in the MCP content envelope."""
-        return {
-            "content": [
-                {"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}
-            ]
-        }
+        """Wrap a payload in the MCP content envelope.
+
+        A failure payload is redacted as a whole: error text is assembled from
+        exceptions in many places, and none of them may carry a secret. A
+        successful one is not -- a reset must still hand the operator the
+        password it set.
+        """
+        texto = json.dumps(payload, indent=2, ensure_ascii=False)
+        if isinstance(payload, dict) and (
+                payload.get("success") is False or payload.get("sucesso") is False
+                or payload.get("erro") or payload.get("error")):
+            texto = redact(texto)
+        return {"content": [{"type": "text", "text": texto}]}
 
     # ============= ENTRADA DE MODELO FRACO =============
     # The server owns its schema, so it can absorb the shapes a model actually
@@ -1894,7 +1904,8 @@ class ActiveDirectoryMCPFastAPI:
                 "sucesso": False, "erro": "FALHA_AO_CONSULTAR_O_AD", "tool": tool_name,
                 "mensagem": (
                     "Nao foi possivel consultar o Active Directory para localizar o objeto "
-                    f"informado ({type(exc).__name__}: {str(exc)[:200]}). Nada foi executado. "
+                    f"informado ({type(exc).__name__}: {redact(str(exc))[:200]}). Nada foi "
+                    "executado. "
                     "Use ad_test_ldap_connection_status para verificar a conexao."),
             }
         if recusa is not None:
@@ -2427,7 +2438,7 @@ class ActiveDirectoryMCPFastAPI:
             self.logger.error(f"Error handling {method}: {e}")
             return {
                 "jsonrpc": "2.0",
-                "error": {"code": -32000, "message": str(e)},
+                "error": {"code": -32000, "message": redact(str(e))},
                 "id": request_id
             }
 

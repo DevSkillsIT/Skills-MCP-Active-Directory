@@ -8,6 +8,7 @@ from ldap3 import MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE
 
 from .base import BaseTool
 from ..core.logging import log_ldap_operation
+from ..core.redaction import register_secret
 
 
 class ComputerTools(BaseTool):
@@ -465,6 +466,7 @@ class ComputerTools(BaseTool):
             # gives the same result: the secure channel is reset and the
             # machine repairs it from its side.
             nova = self._generate_computer_password()
+            register_secret(nova, persistent=False)
             self.ldap.modify(computer_dn, {
                 'unicodePwd': [(MODIFY_REPLACE, [f'"{nova}"'.encode('utf-16-le')])]
             })

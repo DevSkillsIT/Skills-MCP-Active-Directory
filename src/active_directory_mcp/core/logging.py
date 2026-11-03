@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.models import LoggingConfig
+from .redaction import RedactingFilter, install_record_factory
+
+# Every record is redacted at creation, from the first import on: records
+# emitted before setup_logging runs and third-party loggers included.
+install_record_factory()
 
 
 def setup_logging(config: LoggingConfig) -> logging.Logger:
@@ -26,6 +31,8 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     # Clear existing handlers
     logger.handlers.clear()
     
+    install_record_factory()
+
     # Create formatter
     formatter = logging.Formatter(config.format)
     
@@ -35,6 +42,7 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(getattr(logging, config.level))
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(RedactingFilter())
     logger.addHandler(console_handler)
     
     # File handler (if specified)
@@ -53,6 +61,7 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
             )
             file_handler.setLevel(getattr(logging, config.level))
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(RedactingFilter())
             logger.addHandler(file_handler)
             
             logger.info(f"Logging to file: {config.file}")

@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from ..core.redaction import register_secret
 from .models import Config
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,13 @@ def load_config(config_path: Optional[str] = None) -> Config:
         with open(config_file, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
         
+        # Secrets are registered before validation, whose errors echo input.
+        if isinstance(config_data, dict):
+            for secao, chave in (("active_directory", "password"),
+                                 ("client", "automation_token")):
+                if isinstance(config_data.get(secao), dict):
+                    register_secret(config_data[secao].get(chave))
+
         # Validate and create config object
         config = Config(**config_data)
         logger.info("Configuration loaded successfully")

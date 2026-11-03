@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from ..core.redaction import redact, register_secret
 from .models import Config
 
 logger = logging.getLogger("active-directory-mcp.multi-config")
@@ -263,10 +264,13 @@ def load_multi_config(servers_path: Optional[str] = None) -> Dict[str, ADServerE
         )
 
         config_payload = {k: v for k, v in block.items() if k not in _META_KEYS}
+        _registrar_segredos_do_bloco(config_payload)
         try:
             entry.config = Config(**config_payload)
         except Exception as exc:
-            entry.error = f"{type(exc).__name__}: {exc}"
+            # pydantic prints input_value (the whole section, password included)
+            # and this text is logged and shown in the catalogue.
+            entry.error = redact(f"{type(exc).__name__}: {exc}")
             logger.error("Servidor '%s' com configuracao invalida: %s", key, entry.error)
 
         entries[key] = entry
@@ -277,6 +281,16 @@ def load_multi_config(servers_path: Optional[str] = None) -> Dict[str, ADServerE
         servers_path, len(entries), sum(1 for e in entries.values() if e.valid),
     )
     return entries
+
+
+def _registrar_segredos_do_bloco(bloco: Dict[str, Any]) -> None:
+    """Register a block's secrets BEFORE validation, which may echo them."""
+    if not isinstance(bloco, dict):
+        return
+    for secao, chave in (("active_directory", "password"), ("client", "automation_token")):
+        valor = (bloco.get(secao) or {}).get(chave) if isinstance(bloco.get(secao), dict) \
+            else None
+        register_secret(valor)
 
 
 def _assert_unambiguous(entries: Dict[str, ADServerEntry]) -> None:

@@ -14,6 +14,7 @@ from .base import BaseTool
 from ..core.resolver import dividir_dn, normalizar_dn
 from . import sd_acl
 from ..core.logging import log_ldap_operation
+from ..core.redaction import register_secret
 
 # userAccountControl bit flags used by password/account operations
 _UAC_ACCOUNTDISABLE = 0x0002       # 2
@@ -1255,7 +1256,13 @@ class UserTools(BaseTool):
             return self._handle_ldap_error(e, operacao, username)
 
     def _set_user_password(self, user_dn: str, password: str) -> None:
-        """Set user password using LDAP modify operation."""
+        """Set user password using LDAP modify operation.
+
+        @MX:NOTE Every user password write passes here (create, reset, update
+        with password), so the value is registered for redaction here, before
+        ldap3 or the directory can echo it in an error.
+        """
+        register_secret(password, persistent=False)
         # Encode password for Active Directory
         password_encoded = f'"{password}"'.encode('utf-16-le')
         

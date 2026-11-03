@@ -16,6 +16,7 @@ from ..core.ldap_manager import LDAPManager
 from ..core.resolver import caminho_legivel, dividir_dn, normalizar_dn
 from ..core.logging import get_logger, log_ldap_operation
 from ..core.ldap_policy import ocultar_sensiveis, recusa_de_consulta
+from ..core.redaction import redact
 
 
 # Privileged targets (upstream 48a965d). Identity comes from the directory
@@ -264,7 +265,7 @@ class BaseTool(ABC):
         """
         # An exception with an empty str() used to reach the client as an empty
         # error; the class name at least says what kind of failure it was.
-        error_msg = str(e) or type(e).__name__
+        error_msg = redact(str(e)) or type(e).__name__
         
         if isinstance(e, LDAPException):
             self.logger.error(f"LDAP error during {operation}: {error_msg}")
