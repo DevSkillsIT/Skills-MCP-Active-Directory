@@ -179,3 +179,30 @@ def test_reset_bem_sucedido_ainda_entrega_a_senha_ao_operador(srv):
                username="joao.silva", password=SENHA_NOVA)
     assert r.get("success") is True, r
     assert r["new_password"] == SENHA_NOVA
+
+
+# ------------------------------------- formatters that read record.args (uvicorn)
+
+def _linha_de_acesso(caminho: str) -> str:
+    """Format an access record exactly as uvicorn does in production."""
+    from uvicorn.logging import AccessFormatter
+    registro = logging.getLogger("uvicorn.access").makeRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:5000", "POST", caminho, "1.1", 200), None)
+    return AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s',
+                           use_colors=False).format(registro)
+
+
+def test_linha_de_acesso_do_uvicorn_continua_formatando():
+    """Measured in production 2026-11-02 after the first deploy: clearing
+    record.args broke uvicorn's AccessFormatter (expects 5 values) and every
+    access line became a 'Logging error' in the pm2 error log."""
+    redaction.register_secret(SENHA_BIND)
+    assert _linha_de_acesso("/mcp") == '127.0.0.1:5000 - "POST /mcp HTTP/1.1" 200 OK'
+
+
+def test_segredo_num_argumento_some_mesmo_preservando_os_argumentos():
+    redaction.register_secret(SENHA_BIND)
+    linha = _linha_de_acesso(f"/mcp?token={SENHA_BIND}")
+    assert SENHA_BIND not in linha
+    assert linha.startswith('127.0.0.1:5000 - "POST /mcp?token=')

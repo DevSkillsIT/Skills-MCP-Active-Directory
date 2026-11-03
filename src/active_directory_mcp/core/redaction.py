@@ -126,12 +126,29 @@ def redact(text: Any) -> Any:
 def sanitize_record(record: logging.LogRecord) -> None:
     """Redact a record in place: formatted message, exception and stack text.
 
-    The message is formatted first (so a secret split across ``msg`` and
-    ``args`` is still caught), then ``args`` is cleared. Raises on failure;
-    callers fail closed.
+    The message is formatted first, so a secret split across ``msg`` and
+    ``args`` is still caught. ``args`` are kept whenever possible: some
+    formatters read them directly (uvicorn's AccessFormatter unpacks five),
+    and clearing them turned every access line into a 'Logging error' in
+    production (2026-11-02). Raises on failure; callers fail closed.
     """
-    record.msg = redact(record.getMessage())
-    record.args = ()
+    mensagem = record.getMessage()
+    limpa = redact(mensagem)
+    if limpa != mensagem:
+        args = record.args
+        if isinstance(args, tuple) and args:
+            novos = tuple(redact(a) if isinstance(a, str) else a for a in args)
+            novo_msg = redact(record.msg) if isinstance(record.msg, str) else record.msg
+            try:
+                remontada = novo_msg % novos
+            except Exception:  # noqa: BLE001 - cannot keep the args form
+                remontada = None
+            if remontada is not None and redact(remontada) == remontada:
+                record.msg, record.args = novo_msg, novos
+            else:
+                record.msg, record.args = limpa, ()
+        else:
+            record.msg, record.args = limpa, ()
     if record.exc_info and not record.exc_text:
         record.exc_text = logging.Formatter().formatException(record.exc_info)
     if record.exc_text:
