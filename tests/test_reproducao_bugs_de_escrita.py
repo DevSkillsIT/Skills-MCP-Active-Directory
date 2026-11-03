@@ -181,6 +181,8 @@ def ad_com_schema(ldap_mock):
     gerente.ad_config = SimpleNamespace(base_dn=BASE, domain="alfa.local")
     gerente.performance_config = SimpleNamespace(page_size=500)
     gerente.ou_config = None
+    # Stands for ldaps:// as in production; the password pre-flight reads it.
+    conexao.server.ssl = True
     conexao.strategy.add_entry(BASE, {"objectClass": ["top", "domain"], "dc": "alfa"})
     conexao.strategy.add_entry(GRUPO_DN, {"objectClass": ["top", "group"],
                                           "cn": "Financeiro - Filial",

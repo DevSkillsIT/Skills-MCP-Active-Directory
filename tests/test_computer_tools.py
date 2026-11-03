@@ -15,6 +15,9 @@ from active_directory_mcp.config.models import (
 def mock_ldap_manager():
     """Mock LDAP manager for testing."""
     manager = Mock()
+    # A Mock() answers "is the channel secure?" with a Mock, which the
+    # fail-closed password pre-flight reads as no. Production runs LDAPS.
+    manager.is_secure_channel.return_value = True
     manager.ad_config = ActiveDirectoryConfig(
         server="ldap://test.local:389", domain="test.local",
         base_dn="DC=test,DC=local", bind_dn="CN=svc,DC=test,DC=local", password="x")

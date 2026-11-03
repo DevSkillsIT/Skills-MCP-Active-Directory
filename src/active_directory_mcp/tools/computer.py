@@ -455,7 +455,10 @@ class ComputerTools(BaseTool):
                                         computer_dn, "reset_computer_password")
             if recusa is not None:
                 return recusa
-            
+            recusa = self._recusa_canal_de_senha("reset_computer_password")
+            if recusa is not None:
+                return recusa
+
             self.logger.info(f"Resetting password for computer: {computer_name}")
 
             # The old version only zeroed pwdLastSet and answered with a random

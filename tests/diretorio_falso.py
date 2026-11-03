@@ -271,6 +271,12 @@ class DiretorioFalso:
     def estado_de_disponibilidade(self):
         return {"indisponivel": False}
 
+    def is_secure_channel(self):
+        """The fake stands for an LDAPS connection with a validated certificate.
+        Tests about the channel replace this method; without it, the
+        fail-closed pre-flight would (rightly) refuse every password write."""
+        return True
+
     def test_connection(self):
         return {"connected": True, "server": "falso", "search_test": True}
 

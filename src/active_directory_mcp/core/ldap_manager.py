@@ -442,6 +442,17 @@ class LDAPManager:
             }
         return {"indisponivel": False}
 
+    def is_secure_channel(self) -> bool:
+        """True only if the live connection is LDAPS or has completed StartTLS.
+
+        Connection errors propagate: callers treat a failure here as a failed
+        pre-flight and never assume the channel is secure.
+        """
+        connection = self._ensure_connection()
+        if getattr(connection.server, "ssl", False):
+            return True
+        return bool(getattr(connection, "tls_started", False))
+
     def disconnect(self) -> None:
         """Disconnect from LDAP server."""
         # Stop keep-alive first

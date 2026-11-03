@@ -443,6 +443,12 @@ class UserTools(BaseTool):
                     "existing_dn": existing_user[0]['dn'],
                 }, "create_user")
 
+            # Before the add: refusing afterwards would leave an account to
+            # roll back.
+            recusa = self._recusa_canal_de_senha("create_user")
+            if recusa is not None:
+                return recusa
+
             base = {
                 'objectClass': ['top', 'person', 'organizationalPerson', 'user'],
                 'sAMAccountName': username,
@@ -715,6 +721,10 @@ class UserTools(BaseTool):
                 if motivo:
                     return self._recusa_alvo_privilegiado("modify_user", [
                         {"nome": self._nome_do_dn(user_dn), "dn": user_dn, "motivo": motivo}])
+            if tem_senha:
+                recusa = self._recusa_canal_de_senha("modify_user")
+                if recusa is not None:
+                    return recusa
             
             # Prepare modifications. Operator/PowerShell names map to LDAP
             # names, and an empty value CLEARS the attribute: sending "" made
@@ -898,6 +908,9 @@ class UserTools(BaseTool):
                 if motivo:
                     return self._recusa_alvo_privilegiado("reset_password", [
                         {"nome": self._nome_do_dn(user_dn), "dn": user_dn, "motivo": motivo}])
+            recusa = self._recusa_canal_de_senha("reset_password")
+            if recusa is not None:
+                return recusa
             current_uac = self._get_attr(user_results[0]['attributes'], 'userAccountControl', 512)
             if isinstance(current_uac, list):
                 current_uac = current_uac[0] if current_uac else 512
@@ -1263,6 +1276,10 @@ class UserTools(BaseTool):
         ldap3 or the directory can echo it in an error.
         """
         register_secret(password, persistent=False)
+        if not self._canal_de_senha_seguro("set_password"):
+            # Last point before the value leaves the process; every caller
+            # already ran the pre-flight, so reaching this means a new path.
+            raise RuntimeError("Senha nao enviada: canal com o AD sem protecao TLS")
         # Encode password for Active Directory
         password_encoded = f'"{password}"'.encode('utf-16-le')
         

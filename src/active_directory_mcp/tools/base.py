@@ -222,6 +222,38 @@ class BaseTool(ABC):
             "setting": "security.protect_privileged_targets",
         }, operation)
 
+    # -------------------------------------------------------- password channel
+
+    def _canal_de_senha_seguro(self, operation: str) -> bool:
+        """Whether a password may leave the process now. Fails closed."""
+        try:
+            return self.ldap.is_secure_channel() is True
+        except Exception as exc:  # noqa: BLE001 - unknown channel = insecure
+            self.logger.warning("%s: nao foi possivel verificar o canal (%s)",
+                                operation, type(exc).__name__)
+            return False
+
+    def _recusa_canal_de_senha(self, operation: str) -> Optional[List[Content]]:
+        """Pre-flight for every password write; call it BEFORE any mutation.
+
+        @MX:ANCHOR Asked by create, reset, update-with-password and the
+        computer trust reset, before anything is written.
+        @MX:REASON Checking after the add left a half-made account to roll back;
+        checking at the write alone sends nothing but decides too late.
+        """
+        if self._canal_de_senha_seguro(operation):
+            return None
+        self.logger.warning("%s: senha recusada, canal sem protecao", operation)
+        return self._format_response({
+            "success": False, "sucesso": False, "erro": "CANAL_INSEGURO_PARA_SENHA",
+            "mensagem": (
+                "Senha NAO enviada: a conexao com este AD nao esta protegida por TLS "
+                "(ldaps:// ou StartTLS), e a senha atravessaria a rede em texto claro. Nada "
+                "foi alterado. Configure o servidor deste AD com ldaps:// no bloco "
+                "active_directory do ad-servers.json."),
+            "operation": operation,
+        }, operation)
+
     # Generic updates that would reach the gated effects without the gate.
     _ATRIBUTOS_DE_SENHA = {"unicodepwd", "userpassword"}
     _ATRIBUTOS_DE_MEMBRO = {"member", "memberof"}
