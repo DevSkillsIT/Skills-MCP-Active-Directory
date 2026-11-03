@@ -227,6 +227,7 @@ The runtime configuration file path is provided via the `AD_MCP_CONFIG` environm
 | `security.enable_tls` | no | Force StartTLS / LDAPS |
 | `security.validate_certificate` | no | Verify server certificate against `ca_cert_file` |
 | `security.require_secure_connection` | no | Refuse to bind over plaintext |
+| `security.protect_privileged_targets` | no | Default `true`. Refuse membership changes on privileged groups and password changes on privileged accounts. `false` is a per-directory opt-out made by an administrator |
 | `automation.token` | no | Bearer token for unattended write operations |
 | `client.slug` | no | Tenant identifier reported by `ad_search_directory_servers` |
 
@@ -254,6 +255,22 @@ Every write &mdash; each `action` of the `ad_manage_*` tools, and the old write 
 3. The tenant has `require_confirmation_for_writes: false` (explicit opt-out, not recommended).
 
 If none of the above is satisfied, the call short-circuits with a `permitted: false` message and the LDAP write is never attempted.
+
+### Secrets cannot be read or probed
+
+A caller-supplied LDAP filter is a blind oracle: `(ms-Mcs-AdmPwd=a*)` matching one computer and `(ms-Mcs-AdmPwd=b*)` matching none reveals a LAPS password one character at a time. Before any lookup, `filter_criteria` is refused (`FILTRO_LDAP_PROIBIDO`) when it names a secret attribute (passwords and their history, legacy and Windows LAPS, gMSA, key credentials, BitLocker recovery, trust secrets, credential roaming, security descriptors, RBCD), names an attribute by OID, or uses extensible match (`attr:rule:=`, `:dn:=`). The same names are refused in an `attributes` request (`ATRIBUTO_SENSIVEL`), and every response masks them as a backstop for `attributes=["*"]`. The list lives in `core/ldap_policy.py`.
+
+### Privileged targets
+
+Membership changes on privileged groups and password changes on privileged accounts are **refused, not warned** (`ALVO_PRIVILEGIADO`), even with a valid confirmation. Privilege is read from the directory: a well-known RID (Administrator, krbtgt, Domain/Schema/Enterprise Admins, Domain Controllers, Group Policy Creator Owners, Key Admins...) or BUILTIN SID (Administrators and the operator groups), then `adminCount=1`, then the built-in names in English and Portuguese as a fallback &mdash; so a localized DC is covered. Every path is gated: `add_members` / `remove_members` (one privileged group refuses the whole batch), `reset_password`, `update` with a password, `create` with `copy_from_user` (privileged groups of the model are not copied and are listed in `copied_from.grupos_privilegiados_recusados`) and `disable` with `remove_from_groups` (the account is still disabled; privileged removals are skipped and listed in `groups_refused_privileged`). A generic `update` cannot carry `unicodePwd`/`userPassword` or `member`/`memberOf` (`ATRIBUTO_RESERVADO`).
+
+### Password channel
+
+A password only leaves the process over LDAPS or a completed StartTLS (`CANAL_INSEGURO_PARA_SENHA` otherwise). The check runs before any write &mdash; `create` refuses before the account is added &mdash; and an error while checking counts as insecure.
+
+### Redaction
+
+Bind passwords, automation tokens, `AD_MCP_API_TOKEN` and every password a write is about to send are registered for redaction, together with their URL, base64, JSON/repr and `unicodePwd` wire encodings. They are replaced by `***REDACTED***` in every log record (any logger, including ldap3 and uvicorn) and in every error returned to a client. Successful responses are not altered: a reset still returns the password to the operator.
 
 ### Audit logging
 
@@ -314,7 +331,7 @@ MIT &mdash; see [LICENSE](LICENSE).
 ## Acknowledgments
 
 - Based on the upstream [`alpadalar/ActiveDirectoryMCP`](https://github.com/alpadalar/ActiveDirectoryMCP) project by Alperen Adalar.
-- Built on top of [`mcp`](https://github.com/modelcontextprotocol/python-sdk), [`fastmcp`](https://github.com/jlowin/fastmcp), [`ldap3`](https://github.com/cannatag/ldap3), and FastAPI.
+- Built on top of [`mcp`](https://github.com/modelcontextprotocol/python-sdk), [`ldap3`](https://github.com/cannatag/ldap3), and FastAPI.
 
 ## Support
 
