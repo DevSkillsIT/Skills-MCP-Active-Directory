@@ -2,6 +2,7 @@
 
 import json
 import re
+import unicodedata
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,38 @@ from ..core.ldap_manager import LDAPManager
 from ..core.resolver import caminho_legivel, dividir_dn, normalizar_dn
 from ..core.logging import get_logger, log_ldap_operation
 from ..core.ldap_policy import ocultar_sensiveis, recusa_de_consulta
+
+
+# Privileged targets (upstream 48a965d). Identity comes from the directory
+# first: a well-known RID or BUILTIN SID does not depend on the DC's language,
+# while names do ("Domain Admins" is "Admins. do domínio" on a pt-BR DC).
+_RIDS_PRIVILEGIADOS = {
+    500: "Administrator", 502: "krbtgt", 512: "Domain Admins", 516: "Domain Controllers",
+    518: "Schema Admins", 519: "Enterprise Admins", 520: "Group Policy Creator Owners",
+    521: "Read-only Domain Controllers", 526: "Key Admins", 527: "Enterprise Key Admins",
+}
+_SIDS_BUILTIN_PRIVILEGIADOS = {
+    "S-1-5-32-544": "Administrators", "S-1-5-32-548": "Account Operators",
+    "S-1-5-32-549": "Server Operators", "S-1-5-32-550": "Print Operators",
+    "S-1-5-32-551": "Backup Operators", "S-1-5-32-552": "Replicator",
+}
+# Fallback when the SID is not readable, compared with case, accents and
+# punctuation removed. English and pt-BR built-in names.
+_NOMES_PRIVILEGIADOS = {
+    "domainadmins", "enterpriseadmins", "schemaadmins", "administrators",
+    "administradores", "adminsdodominio", "administradoresdaempresa",
+    "administradoresdeesquema", "accountoperators", "operadoresdeconta",
+    "backupoperators", "operadoresdebackup", "serveroperators", "operadoresdeservidor",
+    "printoperators", "operadoresdeimpressao", "grouppolicycreatorowners",
+    "proprietarioscriadoresdepoliticadegrupo", "dnsadmins", "keyadmins",
+    "enterprisekeyadmins", "domaincontrollers", "controladoresdedominio",
+    "administrator", "administrador", "krbtgt",
+}
+
+
+def _nome_simples(valor: Any) -> str:
+    texto = unicodedata.normalize("NFKD", str(valor or "")).casefold()
+    return "".join(c for c in texto if c.isalnum() and not unicodedata.combining(c))
 
 
 class BaseTool(ABC):
@@ -87,6 +120,135 @@ class BaseTool(ABC):
             return None
         self.logger.warning("%s: consulta recusada (%s)", operation, recusa["erro"])
         return self._format_response(recusa, operation)
+
+    # ------------------------------------------------------ privileged targets
+
+    def _protecao_de_privilegiados_ativa(self) -> bool:
+        """security.protect_privileged_targets; absent (fakes, old configs) = on."""
+        config = getattr(self.ldap, "security_config", None)
+        return getattr(config, "protect_privileged_targets", True) is not False
+
+    def _motivo_privilegiado(self, attrs: Dict[str, Any], *nomes: Any) -> Optional[str]:
+        """Why an object is a privileged target, or None.
+
+        @MX:ANCHOR One predicate for every path that changes privileged
+        membership or a privileged password (members, copy_from_user,
+        offboarding, reset, update with password).
+        @MX:REASON The fork had the same check in four places and three of them
+        only warned; one function cannot disagree with itself.
+        """
+        sid = self._get_attr(attrs, 'objectSid', None)
+        if isinstance(sid, (bytes, bytearray)):
+            try:
+                from ldap3.protocol.formatters.formatters import format_sid
+                sid = format_sid(bytes(sid))
+            except Exception:  # noqa: BLE001 - fall back to adminCount and name
+                sid = None
+        if isinstance(sid, str) and sid.startswith("S-"):
+            sid = sid.strip().upper()
+            if sid in _SIDS_BUILTIN_PRIVILEGIADOS:
+                return f"grupo interno privilegiado ({_SIDS_BUILTIN_PRIVILEGIADOS[sid]}, {sid})"
+            if sid.startswith("S-1-5-21-"):
+                try:
+                    rid = int(sid.rsplit("-", 1)[1])
+                except ValueError:
+                    rid = None
+                if rid in _RIDS_PRIVILEGIADOS:
+                    return f"objeto interno privilegiado ({_RIDS_PRIVILEGIADOS[rid]}, RID {rid})"
+        try:
+            admin_count = int(str(self._get_attr(attrs, 'adminCount', 0) or 0))
+        except ValueError:
+            admin_count = 0
+        if admin_count == 1:
+            return "adminCount=1 (objeto protegido pelo AdminSDHolder)"
+        candidatos = list(nomes) + [self._get_attr(attrs, 'sAMAccountName', None),
+                                    self._get_attr(attrs, 'cn', None)]
+        for nome in candidatos:
+            simples = _nome_simples(nome)
+            if simples in _NOMES_PRIVILEGIADOS or simples.startswith("krbtgt"):
+                return f"nome de objeto interno privilegiado ({nome})"
+        return None
+
+    _ATRIBUTOS_DE_PRIVILEGIO = ['sAMAccountName', 'cn', 'objectSid', 'adminCount']
+
+    def _privilegios_por_dn(self, dns: List[str]) -> Dict[str, Dict[str, Any]]:
+        """{normalized DN: {nome, dn, motivo}} for every PRIVILEGED DN in the list.
+
+        Batched like _descrever_grupos. A DN whose details cannot be read is
+        reported as privileged: refusing to touch an unknown group is the
+        fail-closed side (it stays where it was, and the answer says so).
+        """
+        dns = [str(d) for d in dns if d]
+        lidos: Dict[str, Dict[str, Any]] = {}
+        for inicio in range(0, len(dns), self._LOTE_DE_DNS):
+            lote = dns[inicio:inicio + self._LOTE_DE_DNS]
+            filtro = "(|" + "".join(
+                f"(distinguishedName={self._escape_ldap_filter(d)})" for d in lote) + ")"
+            try:
+                for entrada in self.ldap.search(search_base=self.ldap.ad_config.base_dn,
+                                                search_filter=filtro,
+                                                attributes=self._ATRIBUTOS_DE_PRIVILEGIO):
+                    lidos[normalizar_dn(entrada['dn'])] = entrada['attributes']
+            except Exception as exc:  # noqa: BLE001 - unread = treated as privileged
+                self.logger.warning("Nao foi possivel ler privilegios de grupos: %s", exc)
+        privilegiados: Dict[str, Dict[str, Any]] = {}
+        for dn in dns:
+            attrs = lidos.get(normalizar_dn(dn))
+            motivo = ("detalhes nao lidos (permissao, grupo de outro dominio ou removido); "
+                      "nao alterado por seguranca") if attrs is None \
+                else self._motivo_privilegiado(attrs, self._nome_do_dn(dn))
+            if motivo:
+                privilegiados[normalizar_dn(dn)] = {"nome": self._nome_do_dn(dn), "dn": dn,
+                                                    "motivo": motivo}
+        return privilegiados
+
+    def _recusa_alvo_privilegiado(self, operation: str,
+                                  alvos: List[Dict[str, Any]]) -> List[Content]:
+        """The refusal payload: nothing was written, and who can change that."""
+        nomes = ", ".join(f"{a['nome']} ({a['motivo']})" for a in alvos)
+        self.logger.warning("%s: recusado alvo privilegiado: %s", operation,
+                            ", ".join(a["nome"] for a in alvos))
+        return self._format_response({
+            "success": False, "sucesso": False, "erro": "ALVO_PRIVILEGIADO",
+            "mensagem": (
+                f"Recusado: {nomes} e alvo privilegiado. Este servidor nao altera membros de "
+                "grupos privilegiados nem senhas de contas privilegiadas, mesmo com "
+                "confirmacao. Nada foi alterado. Faca a mudanca pelo console do AD, ou um "
+                "administrador desliga a protecao deste AD em security."
+                "protect_privileged_targets=false (decisao humana, fora do alcance da IA)."),
+            "operation": operation,
+            "alvos_privilegiados": alvos,
+            "setting": "security.protect_privileged_targets",
+        }, operation)
+
+    # Generic updates that would reach the gated effects without the gate.
+    _ATRIBUTOS_DE_SENHA = {"unicodepwd", "userpassword"}
+    _ATRIBUTOS_DE_MEMBRO = {"member", "memberof"}
+
+    def _recusa_atributo_reservado(self, operation: str,
+                                   attributes: Any) -> Optional[List[Content]]:
+        """Refuse password or membership attributes in a generic create/update."""
+        if not isinstance(attributes, dict):
+            return None
+        chaves = {str(k).split(";", 1)[0].strip().lower(): str(k) for k in attributes}
+        senha = [chaves[k] for k in chaves if k in self._ATRIBUTOS_DE_SENHA]
+        membro = [chaves[k] for k in chaves if k in self._ATRIBUTOS_DE_MEMBRO]
+        if not senha and not membro:
+            return None
+        partes = []
+        if senha:
+            partes.append(f"{', '.join(senha)}: senha so pela action reset_password (ou o "
+                          "parametro password na criacao), que checa canal seguro e alvo "
+                          "privilegiado")
+        if membro:
+            partes.append(f"{', '.join(membro)}: membros so pelas actions add_members / "
+                          "remove_members, que checam grupo privilegiado e nao substituem a "
+                          "lista inteira")
+        return self._format_response({
+            "success": False, "sucesso": False, "erro": "ATRIBUTO_RESERVADO",
+            "mensagem": "Recusado, nada foi alterado. " + "; ".join(partes) + ".",
+            "operation": operation, "atributos_recusados": senha + membro,
+        }, operation)
 
     def _handle_ldap_error(self, e: Exception, operation: str, dn: str = "") -> List[Content]:
         """

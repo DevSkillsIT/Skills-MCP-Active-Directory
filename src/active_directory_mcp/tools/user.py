@@ -11,7 +11,7 @@ import ldap3
 from ldap3 import MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE
 
 from .base import BaseTool
-from ..core.resolver import dividir_dn
+from ..core.resolver import dividir_dn, normalizar_dn
 from . import sd_acl
 from ..core.logging import log_ldap_operation
 
@@ -377,6 +377,12 @@ class UserTools(BaseTool):
                               f"{problema}. Informe so o login, ex.: joana.lima. Nada foi criado."),
                     "username": username,
                 }, "create_user")
+            if isinstance(additional_attributes, dict):
+                recusa = self._recusa_atributo_reservado("create_user", {
+                    k: v for k, v in additional_attributes.items()
+                    if str(k).split(";", 1)[0].strip().lower() in self._ATRIBUTOS_DE_SENHA})
+                if recusa is not None:
+                    return recusa
             extras, opcoes, avisos = self._normalizar_atributos_de_criacao(additional_attributes)
             if must_change_password is None:
                 must_change_password = self._como_booleano(
@@ -534,8 +540,17 @@ class UserTools(BaseTool):
 
             grupos_ok: List[str] = []
             grupos_falha: List[Dict[str, str]] = []
+            grupos_privilegiados: List[Dict[str, Any]] = []
             if modelo is not None:
-                for grupo_dn in self._get_attr_list(modelo['attributes'], 'memberOf'):
+                dns_do_modelo = self._get_attr_list(modelo['attributes'], 'memberOf')
+                protegidos = (self._privilegios_por_dn(dns_do_modelo)
+                              if self._protecao_de_privilegiados_ativa() else {})
+                for grupo_dn in dns_do_modelo:
+                    if normalizar_dn(grupo_dn) in protegidos:
+                        # Was copied and only warned about afterwards; a new
+                        # hire never inherits administrative rights by copy.
+                        grupos_privilegiados.append(protegidos[normalizar_dn(grupo_dn)])
+                        continue
                     try:
                         self.ldap.modify(grupo_dn, {'member': [(MODIFY_ADD, [user_dn])]})
                         grupos_ok.append(self._nome_do_dn(grupo_dn))
@@ -574,11 +589,19 @@ class UserTools(BaseTool):
                     dados["copied_from"]["aviso"] = (
                         f"A conta modelo esta desativada; a OU herdada foi "
                         f"{self._caminho_da_ou(user_dn)}. Confira se e o setor certo.")
-                privilegiados = [g for g in grupos_ok if self._eh_grupo_privilegiado(g)]
-                if privilegiados:
-                    dados["aviso_privilegiado"] = (
-                        f"Grupos administrativos copiados: {', '.join(privilegiados)}. A conta nova "
-                        "tem privilegio elevado; se nao era a intencao, retire-a desses grupos.")
+                if grupos_privilegiados:
+                    dados["copied_from"]["grupos_privilegiados_recusados"] = grupos_privilegiados
+                    dados["copied_from"]["aviso_privilegiado"] = (
+                        "Estes grupos da conta modelo sao privilegiados e NAO foram copiados: "
+                        f"{', '.join(g['nome'] for g in grupos_privilegiados)}. Se a pessoa "
+                        "precisa mesmo deles, a inclusao e feita pelo console do AD.")
+                elif not self._protecao_de_privilegiados_ativa():
+                    copiados = [g for g in grupos_ok
+                                if self._motivo_privilegiado({}, g) is not None]
+                    if copiados:
+                        dados["aviso_privilegiado"] = (
+                            f"Grupos administrativos copiados: {', '.join(copiados)} (protecao "
+                            "de alvos privilegiados desligada neste AD).")
                 if not grupos_ok and not grupos_falha:
                     dados["copied_from"]["nota"] = (
                         "A conta modelo so tem o grupo primario (Domain Users), que toda "
@@ -599,6 +622,9 @@ class UserTools(BaseTool):
                              f"{', '.join(recusados)}")
             if grupos_falha:
                 mensagem += f"; {len(grupos_falha)} group(s) could not be joined"
+            if grupos_privilegiados:
+                mensagem += (f"; ATTENTION: {len(grupos_privilegiados)} privileged group(s) of the "
+                             "model were NOT copied (see copied_from.grupos_privilegiados_recusados)")
             if dados.get("aviso_privilegiado"):
                 mensagem += "; ATTENTION: administrative groups were copied (see aviso_privilegiado)"
             return self._success_response(mensagem, dados)
@@ -614,17 +640,6 @@ class UserTools(BaseTool):
                                "terminated", "exfuncion", "excolab", "oldusers", "leaver",
                                "encerrad", "revogad", "arquivad", "archive", "offboard",
                                "desconectad", "suspens", "afastad", "arquivomorto")
-
-    _GRUPOS_PRIVILEGIADOS = {
-        "domainadmins", "enterpriseadmins", "schemaadmins", "administrators",
-        "administradores", "adminsdodominio", "administradoresdaempresa",
-        "administradoresdeesquema", "accountoperators", "operadoresdeconta",
-        "backupoperators", "operadoresdebackup", "serveroperators", "operadoresdeservidor",
-        "printoperators", "grouppolicycreatorowners", "dnsadmins", "keyadmins",
-        "enterprisekeyadmins"}
-
-    def _eh_grupo_privilegiado(self, nome: str) -> bool:
-        return self._chave_simples(nome) in self._GRUPOS_PRIVILEGIADOS
 
     # sAMAccountName: no spaces and none of these (Microsoft's list), max 20.
     _PROIBIDOS_NO_LOGIN = set('"/\\[]:;|=,+*?<>@')
@@ -675,10 +690,14 @@ class UserTools(BaseTool):
         """
         try:
             # Find user DN
+            recusa = self._recusa_atributo_reservado("modify_user", attributes)
+            if recusa is not None:
+                return recusa
+
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['sAMAccountName']
+                attributes=self._ATRIBUTOS_DE_PRIVILEGIO
             )
             
             if not user_results:
@@ -689,6 +708,12 @@ class UserTools(BaseTool):
                 }, "modify_user")
             
             user_dn = user_results[0]['dn']
+            tem_senha = any(str(k).lower() == 'password' for k in attributes)
+            if tem_senha and self._protecao_de_privilegiados_ativa():
+                motivo = self._motivo_privilegiado(user_results[0]['attributes'], username)
+                if motivo:
+                    return self._recusa_alvo_privilegiado("modify_user", [
+                        {"nome": self._nome_do_dn(user_dn), "dn": user_dn, "motivo": motivo}])
             
             # Prepare modifications. Operator/PowerShell names map to LDAP
             # names, and an empty value CLEARS the attribute: sending "" made
@@ -856,7 +881,7 @@ class UserTools(BaseTool):
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['sAMAccountName', 'userAccountControl']
+                attributes=['userAccountControl'] + self._ATRIBUTOS_DE_PRIVILEGIO
             )
             
             if not user_results:
@@ -867,6 +892,11 @@ class UserTools(BaseTool):
                 }, "reset_password")
             
             user_dn = user_results[0]['dn']
+            if self._protecao_de_privilegiados_ativa():
+                motivo = self._motivo_privilegiado(user_results[0]['attributes'], username)
+                if motivo:
+                    return self._recusa_alvo_privilegiado("reset_password", [
+                        {"nome": self._nome_do_dn(user_dn), "dn": user_dn, "motivo": motivo}])
             current_uac = self._get_attr(user_results[0]['attributes'], 'userAccountControl', 512)
             if isinstance(current_uac, list):
                 current_uac = current_uac[0] if current_uac else 512
@@ -1157,8 +1187,17 @@ class UserTools(BaseTool):
 
             grupos_removidos: List[Dict[str, str]] = []
             falhas_grupos: List[Dict[str, str]] = []
+            grupos_privilegiados: List[Dict[str, Any]] = []
             if desativar and remove_from_groups:
-                for grupo_dn in self._get_attr_list(attrs, 'memberOf'):
+                dns_dos_grupos = self._get_attr_list(attrs, 'memberOf')
+                protegidos = (self._privilegios_por_dn(dns_dos_grupos)
+                              if self._protecao_de_privilegiados_ativa() else {})
+                for grupo_dn in dns_dos_grupos:
+                    if normalizar_dn(grupo_dn) in protegidos:
+                        # Disabling is never blocked (it is the protective half
+                        # of offboarding); only the privileged removal is.
+                        grupos_privilegiados.append(protegidos[normalizar_dn(grupo_dn)])
+                        continue
                     try:
                         self.ldap.modify(grupo_dn, {'member': [(MODIFY_DELETE, [user_dn])]})
                         grupos_removidos.append({"nome": self._nome_do_dn(grupo_dn),
@@ -1170,6 +1209,9 @@ class UserTools(BaseTool):
                                               "dn": grupo_dn, "erro": str(exc)[:200]})
                 if grupos_removidos:
                     aplicado.append(f"removida de {len(grupos_removidos)} grupo(s)")
+                if grupos_privilegiados:
+                    aplicado.append(f"{len(grupos_privilegiados)} grupo(s) privilegiado(s) NAO "
+                                    "alterado(s) (ver groups_refused_privileged)")
 
             relido = self.ldap.search(search_base=user_dn, search_filter="(objectClass=*)",
                                       attributes=['userAccountControl', 'memberOf'],
@@ -1197,6 +1239,13 @@ class UserTools(BaseTool):
                                              self._get_attr_list(attrs_relidos, 'memberOf')]
                 if falhas_grupos:
                     dados["groups_failed"] = falhas_grupos
+                if grupos_privilegiados:
+                    dados["groups_refused_privileged"] = grupos_privilegiados
+                    dados["aviso_privilegiado"] = (
+                        "A conta foi desativada, mas continua membro destes grupos "
+                        "privilegiados, que este servidor nao altera: "
+                        f"{', '.join(g['nome'] for g in grupos_privilegiados)}. Retire-a pelo "
+                        "console do AD.")
             elif desativar:
                 dados["groups_kept"] = len(self._get_attr_list(attrs_relidos, 'memberOf'))
             return self._success_response(

@@ -235,7 +235,11 @@ def test_campos_de_topo_pais_e_other_attributes_nao_somem(srv):
     assert criada["c"] == "BR" and criada["ipPhone"] == "123"
 
 
-def test_copiar_grupo_privilegiado_avisa(srv):
+def test_copiar_grupo_privilegiado_recusa_so_esse_grupo(srv):
+    """Was a warning after the fact (aviso_privilegiado); now the privileged
+    group is not copied at all and the answer names it (upstream 48a965d).
+    This group has neither objectSid nor adminCount: the built-in name alone
+    must be enough."""
     falso = srv.falso
     dn_adm = f"CN=Domain Admins,CN=Users,{BASE}"
     from .diretorio_falso import grupo
@@ -244,8 +248,11 @@ def test_copiar_grupo_privilegiado_avisa(srv):
     falso.incluir_membro(dn_adm, SABRINA)
     r = chamar(srv, "ad_create_user_account", username="nova.z", password="Mudar@12345",
                first_name="Nova", last_name="Z", copy_from_user="sabrina.rocha")
-    assert "Domain Admins" in r["aviso_privilegiado"]
-    assert "administrative groups" in r["message"]
+    assert r["success"] is True
+    nomes = [g["nome"] for g in r["copied_from"]["grupos_privilegiados_recusados"]]
+    assert nomes == ["Domain Admins"]
+    assert "Domain Admins" not in r["groups"]
+    assert "NOT copied" in r["message"]
 
 
 # ----------------------------------------- 14. new login from another format

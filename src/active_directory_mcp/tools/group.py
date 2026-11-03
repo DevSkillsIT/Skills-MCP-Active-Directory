@@ -380,7 +380,11 @@ class GroupTools(BaseTool):
                 }, "modify_group")
             
             group_dn = group_results[0]['dn']
-            
+
+            recusa = self._recusa_atributo_reservado("modify_group", attributes)
+            if recusa is not None:
+                return recusa
+
             # Prepare modifications
             modifications = {}
             for attr, value in attributes.items():
@@ -508,13 +512,29 @@ class GroupTools(BaseTool):
         lista_grupos = list(dict.fromkeys(self._como_lista(grupos)))
         lista_membros = list({normalizar_dn(m): m for m in self._como_lista(membros)}.values())
         try:
-            resultados: List[Dict[str, Any]] = []
+            # Every group is read (and judged) before anything is written: one
+            # privileged group refuses the whole call, as one unresolved item
+            # does, so a batch never ends half applied (upstream 48a965d).
+            achados: Dict[str, Any] = {}
+            privilegiados: List[Dict[str, Any]] = []
             for grupo in lista_grupos:
                 achado = self.ldap.search(
                     search_base=self.ldap.ad_config.base_dn,
                     search_filter=f"(&(objectClass=group)"
                                   f"(sAMAccountName={self._escape_ldap_filter(grupo)}))",
-                    attributes=['member', 'objectSid'])
+                    attributes=['member', 'objectSid', 'adminCount', 'sAMAccountName', 'cn'])
+                achados[grupo] = achado
+                if achado and self._protecao_de_privilegiados_ativa():
+                    motivo = self._motivo_privilegiado(achado[0]['attributes'], grupo)
+                    if motivo:
+                        privilegiados.append({"nome": self._nome_do_dn(achado[0]['dn']),
+                                              "dn": achado[0]['dn'], "motivo": motivo})
+            if privilegiados:
+                return self._recusa_alvo_privilegiado(operacao, privilegiados)
+
+            resultados: List[Dict[str, Any]] = []
+            for grupo in lista_grupos:
+                achado = achados[grupo]
                 if not achado:
                     for membro in lista_membros:
                         resultados.append({"grupo": grupo, "membro": self._nome_do_dn(membro),

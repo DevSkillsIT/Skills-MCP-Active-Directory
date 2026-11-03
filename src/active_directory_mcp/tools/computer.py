@@ -286,6 +286,9 @@ class ComputerTools(BaseTool):
         Returns:
             List of MCP content objects with modification result
         """
+        recusa = self._recusa_atributo_reservado("modify_computer", attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Normalize computer name
             if not computer_name.endswith('$'):

@@ -44,6 +44,15 @@ class SecurityConfig(BaseModel):
     validate_certificate: bool = Field(default=True, description="Validate server certificate")
     ca_cert_file: Optional[str] = Field(default=None, description="CA certificate file path")
     require_secure_connection: bool = Field(default=True, description="Require secure connection")
+    protect_privileged_targets: bool = Field(
+        default=True,
+        description=(
+            "Refuse membership changes on privileged groups and password changes on "
+            "privileged accounts (well-known RIDs such as Domain/Enterprise/Schema Admins, "
+            "Administrators, operator groups, krbtgt, Administrator; or adminCount=1). "
+            "false is an explicit, per-directory opt-out made by an administrator."
+        ),
+    )
 
 
 class LoggingConfig(BaseModel):
