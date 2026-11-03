@@ -443,11 +443,17 @@ class LDAPManager:
         return {"indisponivel": False}
 
     def is_secure_channel(self) -> bool:
-        """True only if the live connection is LDAPS or has completed StartTLS.
+        """True only if the live connection is LDAPS (or completed StartTLS) AND
+        the server certificate is validated (security.validate_certificate).
 
+        A password must not travel over TLS whose peer is unauthenticated
+        (upstream 96f0f2a). A config without the field counts as not validated.
         Connection errors propagate: callers treat a failure here as a failed
         pre-flight and never assume the channel is secure.
         """
+        if getattr(getattr(self, "security_config", None),
+                   "validate_certificate", False) is not True:
+            return False
         connection = self._ensure_connection()
         if getattr(connection.server, "ssl", False):
             return True

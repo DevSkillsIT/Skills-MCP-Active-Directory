@@ -266,7 +266,7 @@ Membership changes on privileged groups and password changes on privileged accou
 
 ### Password channel
 
-A password only leaves the process over LDAPS or a completed StartTLS (`CANAL_INSEGURO_PARA_SENHA` otherwise). The check runs before any write &mdash; `create` refuses before the account is added &mdash; and an error while checking counts as insecure.
+A password only leaves the process over LDAPS or a completed StartTLS **with the server certificate validated** (`security.validate_certificate: true`, with `ca_cert_file` holding the domain's root CA when it is not in the system store); `CANAL_INSEGURO_PARA_SENHA` otherwise. TLS whose peer is not authenticated does not protect the password from whoever sits in the middle. The check runs before any write &mdash; `create` refuses before the account is added &mdash; and an error while checking counts as insecure.
 
 ### Redaction
 

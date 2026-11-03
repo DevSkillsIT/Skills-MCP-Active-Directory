@@ -119,3 +119,28 @@ def test_canal_seguro_continua_gravando(srv):
     r = chamar(srv, "ad_manage_directory_users", action="reset_password",
                username="joao.silva", password=SENHA)
     assert r.get("success") is True, r
+
+
+# ------------------------------- certificate validation (upstream 96f0f2a)
+
+def test_ldaps_sem_validar_certificado_nao_e_canal_de_senha():
+    """TLS whose peer is not authenticated protects nothing against whoever
+    sits in the middle: the password must not travel over it."""
+    assert _gerente("ldaps://dc.alfa.local", valida=False).is_secure_channel() is False
+
+
+def test_starttls_sem_validar_certificado_nao_e_canal_de_senha():
+    assert _gerente("ldap://dc.alfa.local", tls_iniciado=True,
+                    valida=False).is_secure_channel() is False
+
+
+def test_config_sem_campo_de_validacao_conta_como_nao_validado():
+    gerente = _gerente("ldaps://dc.alfa.local")
+    gerente.security_config = SimpleNamespace()
+    assert gerente.is_secure_channel() is False
+
+
+def test_recusa_explica_como_validar_o_certificado(inseguro):
+    r = chamar(inseguro, "ad_manage_directory_users", action="reset_password",
+               username="joao.silva", password=SENHA)
+    assert "validate_certificate" in r["mensagem"] and "ca_cert_file" in r["mensagem"]

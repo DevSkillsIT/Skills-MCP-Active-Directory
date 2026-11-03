@@ -247,10 +247,12 @@ class BaseTool(ABC):
         return self._format_response({
             "success": False, "sucesso": False, "erro": "CANAL_INSEGURO_PARA_SENHA",
             "mensagem": (
-                "Senha NAO enviada: a conexao com este AD nao esta protegida por TLS "
-                "(ldaps:// ou StartTLS), e a senha atravessaria a rede em texto claro. Nada "
-                "foi alterado. Configure o servidor deste AD com ldaps:// no bloco "
-                "active_directory do ad-servers.json."),
+                "Senha NAO enviada: a conexao com este AD nao usa TLS com certificado "
+                "validado, entao a senha atravessaria a rede em texto claro ou para um "
+                "servidor nao autenticado. Nada foi alterado. No bloco deste AD em "
+                "ad-servers.json: servidor com ldaps://, security.validate_certificate=true "
+                "e security.ca_cert_file com a CA raiz do dominio (o nome no certificado "
+                "precisa bater com o endereco do servidor)."),
             "operation": operation,
         }, operation)
 
