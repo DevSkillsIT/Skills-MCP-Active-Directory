@@ -26,6 +26,9 @@ class OrganizationalUnitTools(BaseTool):
         Returns:
             List of MCP content objects with OU information
         """
+        recusa = self._recusa_de_consulta("list_ous", filter_criteria, attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Determine search base
             if parent_ou:

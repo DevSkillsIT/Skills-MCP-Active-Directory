@@ -26,6 +26,9 @@ class GroupTools(BaseTool):
         Returns:
             List of MCP content objects with group information
         """
+        recusa = self._recusa_de_consulta("list_groups", filter_criteria, attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Determine search base
             if ou:
@@ -119,6 +122,9 @@ class GroupTools(BaseTool):
         Returns:
             List of MCP content objects with group information
         """
+        recusa = self._recusa_de_consulta("get_group", None, attributes)
+        if recusa is not None:
+            return recusa
         try:
             escaped_group_name = self._escape_ldap_filter(group_name)
             search_filter = f"(&(objectClass=group)(sAMAccountName={escaped_group_name}))"

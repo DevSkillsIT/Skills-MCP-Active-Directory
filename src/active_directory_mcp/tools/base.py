@@ -14,6 +14,7 @@ import ldap3
 from ..core.ldap_manager import LDAPManager
 from ..core.resolver import caminho_legivel, dividir_dn, normalizar_dn
 from ..core.logging import get_logger, log_ldap_operation
+from ..core.ldap_policy import ocultar_sensiveis, recusa_de_consulta
 
 
 class BaseTool(ABC):
@@ -52,8 +53,10 @@ class BaseTool(ABC):
             List of MCP content objects
         """
         try:
-            # Serialize datetime objects before JSON conversion
-            serialized_data = self._serialize_datetime(data)
+            # Serialize datetime objects before JSON conversion. Secret
+            # attributes are masked here, the one exit every tool shares, so
+            # attributes=["*"] cannot carry a LAPS or gMSA password out.
+            serialized_data = ocultar_sensiveis(self._serialize_datetime(data))
             
             if isinstance(serialized_data, dict):
                 formatted_data = json.dumps(serialized_data, indent=2, ensure_ascii=False)
@@ -72,6 +75,19 @@ class BaseTool(ABC):
             }
             return [Content(type="text", text=json.dumps(error_response, indent=2))]
     
+    def _recusa_de_consulta(self, operation: str, filter_criteria: Any = None,
+                            attributes: Any = None) -> Optional[List[Content]]:
+        """Refuse a caller-supplied filter or attribute list that reaches a secret.
+
+        The resolver already refuses these before routing; this is the same
+        predicate at the tool layer, for callers that do not go through it.
+        """
+        recusa = recusa_de_consulta(filter_criteria, attributes)
+        if recusa is None:
+            return None
+        self.logger.warning("%s: consulta recusada (%s)", operation, recusa["erro"])
+        return self._format_response(recusa, operation)
+
     def _handle_ldap_error(self, e: Exception, operation: str, dn: str = "") -> List[Content]:
         """
         Handle LDAP errors and format error response.

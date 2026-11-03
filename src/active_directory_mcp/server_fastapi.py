@@ -1943,7 +1943,8 @@ class ActiveDirectoryMCPFastAPI:
     _SEM_GRACA = {"ad_test_ldap_connection_status"}
 
     # Refusals that depend on the input, not on the directory's content.
-    _RECUSAS_DE_ENTRADA = {"FILTRO_LDAP_INVALIDO", "PARAMETRO_INVALIDO", "OBJETO_FORA_DO_DOMINIO"}
+    _RECUSAS_DE_ENTRADA = {"FILTRO_LDAP_INVALIDO", "PARAMETRO_INVALIDO", "OBJETO_FORA_DO_DOMINIO",
+                           "FILTRO_LDAP_PROIBIDO", "ATRIBUTO_SENSIVEL"}
 
     @staticmethod
     def _tem_resultado(payload) -> bool:

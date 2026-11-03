@@ -36,6 +36,9 @@ class UserTools(BaseTool):
         Returns:
             List of MCP content objects with user information
         """
+        recusa = self._recusa_de_consulta("list_users", filter_criteria, attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Determine search base
             if ou:
@@ -137,6 +140,9 @@ class UserTools(BaseTool):
         Returns:
             List of MCP content objects with user information
         """
+        recusa = self._recusa_de_consulta("get_user", None, attributes)
+        if recusa is not None:
+            return recusa
         try:
             escaped_username = self._escape_ldap_filter(username)
             search_filter = (f"(&(objectCategory=person)(objectClass=user)"

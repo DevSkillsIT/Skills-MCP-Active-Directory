@@ -38,6 +38,8 @@ from ldap3.core.exceptions import LDAPInvalidFilterError
 from ldap3.operation.search import parse_filter
 from ldap3.utils.conv import escape_filter_chars
 
+from .ldap_policy import recusa_de_consulta
+
 # ----------------------------------------------------------------- object kinds
 
 _PESSOA = "(&(objectCategory=person)(objectClass=user))"
@@ -972,6 +974,13 @@ def resolver_argumentos(tool_name: str, args: Dict[str, Any], ldap, base_dn: str
     the stdio server.py). Returns (arguments, refusal, identifications): the
     refusal is a ready payload and means the tool must NOT run.
     """
+    # Secrets first, before any lookup: a probe must not reach the directory,
+    # not even to resolve a name (upstream f5fef26, extended to attributes).
+    recusa_de_segredo = recusa_de_consulta(args.get("filter_criteria"),
+                                           args.get("attributes"), tool=tool_name)
+    if recusa_de_segredo is not None:
+        return None, recusa_de_segredo, []
+
     resolvedor = ResolvedorAD(ldap, base_dn)
     novos = dict(args)
     identificacoes: List[Dict[str, Any]] = []

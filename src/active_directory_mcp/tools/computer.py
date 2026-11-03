@@ -26,6 +26,9 @@ class ComputerTools(BaseTool):
         Returns:
             List of MCP content objects with computer information
         """
+        recusa = self._recusa_de_consulta("list_computers", filter_criteria, attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Determine search base
             if ou:
@@ -110,6 +113,9 @@ class ComputerTools(BaseTool):
         Returns:
             List of MCP content objects with computer information
         """
+        recusa = self._recusa_de_consulta("get_computer", None, attributes)
+        if recusa is not None:
+            return recusa
         try:
             # Normalize computer name (add $ if not present)
             if not computer_name.endswith('$'):
